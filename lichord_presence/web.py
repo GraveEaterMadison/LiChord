@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .config import CONFIG_PATH, PresenceConfig
+from .state import get_now_playing
 
 PAGE = Path(__file__).with_name("static") / "index.html"
 
@@ -26,7 +27,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/config":
-            with self.lock: self._json(200, self.config.__dict__)
+            with self.lock:
+                self._json(200, self.config.__dict__)
+        elif path == "/api/now-playing":
+            self._json(200, get_now_playing() or {})
         elif path == "/":
             body = PAGE.read_bytes()
             self.send_response(200)
@@ -44,9 +48,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "not found"})
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if size > 16384: return self._json(413, {"error": "payload too large"})
+            if size > 16384:
+                return self._json(413, {"error": "payload too large"})
             raw = json.loads(self.rfile.read(size))
-            if not isinstance(raw, dict): raise ValueError("Expected a JSON object")
+            if not isinstance(raw, dict):
+                raise ValueError("Expected a JSON object")
             with self.lock:
                 self.config = PresenceConfig.from_mapping(raw)
                 self.config.save()

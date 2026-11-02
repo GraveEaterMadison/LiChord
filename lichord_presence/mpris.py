@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .config import PresenceConfig
 from .discord_ipc import DiscordIPC
+from .state import update_now_playing
 
 log = logging.getLogger("lichord.presence")
 
@@ -31,7 +32,8 @@ def _track(metadata: dict[str, Any]) -> dict[str, Any] | None:
     if not video_id and parsed.netloc.endswith("youtu.be"):
         video_id = parsed.path.strip("/")
     external_url = url if url.startswith(("https://", "http://")) else None
-    return {"title": title, "artist": artist, "album": album, "artwork": art or None,
+    artwork = art if art.startswith("https://") else None
+    return {"title": title, "artist": artist, "album": album, "artwork": artwork,
             "url": external_url, "video_id": video_id,
             "local": not bool(external_url or video_id)}
 
@@ -89,10 +91,14 @@ class MprisPresence:
                         duration_us = getattr(duration_us, "value", duration_us) or 0
                         position = max(0.0, float(pos_us or 0) / 1_000_000)
                         duration = max(0.0, float(duration_us) / 1_000_000)
+                        update_now_playing({"track": track, "playing": is_playing,
+                                            "position": position, "duration": duration})
                         await self._publish(track, is_playing, position, duration)
                     else:
+                        update_now_playing(None)
                         self._clear()
                 else:
+                    update_now_playing(None)
                     self._clear()
             except Exception:
                 log.warning("MPRIS poll failed", exc_info=True)
@@ -134,8 +140,6 @@ class MprisPresence:
 
         now_wall = time.time()
         start_ms = int((now_wall - max(0.0, position)) * 1000) if playing and cfg.timestamps and duration > 0 else None
-        # Exclude timestamps from the signature: position advances continuously, but Discord
-        # should only receive a new frame for a seek, state/config change, track change or refresh.
         from .discord_ipc import build_activity
         activity = build_activity(cfg, track, playing, position, duration, now_wall)
         signature_payload = dict(activity)
