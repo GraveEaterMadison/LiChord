@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LiChord Presence</title>
+<style>
+:root{color-scheme:dark;font:14px system-ui;background:#111318;color:#e8eaf0}*{box-sizing:border-box}body{margin:0;padding:28px;max-width:1120px;margin:auto}h1{margin:0;font-size:28px}p{color:#aab0bd;line-height:1.5}.layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:24px}.panel{background:#1b1e26;border:1px solid #303542;border-radius:14px;padding:18px;margin:16px 0}.group{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:flex;flex-direction:column;gap:6px;margin:10px 0}.field label{color:#cbd0dc;font-size:12px}.field input,.field select{background:#10131a;border:1px solid #3b4252;color:#f4f5f8;padding:10px;border-radius:8px;min-width:0}.toggle{display:flex;align-items:center;gap:9px;margin:12px 0}.toggle input{accent-color:#7289da}.actions{display:flex;gap:10px;margin-top:16px}button{background:#5865f2;border:0;color:white;padding:10px 16px;border-radius:8px;cursor:pointer}button.secondary{background:#343945}.card{background:#232428;border-radius:10px;padding:14px;color:#f2f3f5;position:sticky;top:20px}.head{font-weight:650;color:#b5bac1;margin-bottom:12px}.track{display:flex;gap:12px}.art{width:68px;height:68px;border-radius:7px;background:#343945;object-fit:cover}.lines{min-width:0;display:flex;flex-direction:column;justify-content:center;gap:4px}.line{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.line.one{font-weight:700}.line.two{color:#dbdee1}.line.three{color:#b5bac1}.bar{display:flex;align-items:center;gap:8px;font:11px monospace;color:#b5bac1;margin-top:8px}.meter{height:4px;flex:1;background:#555;border-radius:8px}.meter i{display:block;height:100%;width:32%;background:#ddd;border-radius:8px}.buttons{display:grid;gap:6px;margin-top:12px}.buttons span{background:#4e5058;text-align:center;padding:7px;border-radius:4px}.status{font-size:12px;color:#aab0bd;margin-top:12px}.note{font-size:12px;color:#aab0bd}@media(max-width:800px){body{padding:16px}.layout{grid-template-columns:1fr}.card{position:static}.group{grid-template-columns:1fr}}
+</style></head><body>
+<h1>LiChord Presence</h1><p>Standalone Discord Rich Presence companion. It reads playback metadata from Linux MPRIS and publishes a configurable Listening activity to the running Discord desktop client.</p>
+<div class="layout"><main>
+<section class="panel"><h2>Connection</h2>
+<div class="field"><label>Discord Application ID</label><input id="application_id" placeholder="Create an application at discord.com/developers/applications"></div>
+<div class="field"><label>Application name override (optional)</label><input id="app_name" maxlength="128" placeholder="LiChord"></div>
+<div class="field"><label>Application button URL</label><input id="app_url" placeholder="https://github.com/GraveEaterMadison/LiChord"></div>
+<label class="toggle"><input type="checkbox" id="enabled"> Enable Rich Presence</label>
+<label class="toggle"><input type="checkbox" id="show_paused"> Keep presence visible while paused</label>
+<label class="toggle"><input type="checkbox" id="hide_details"> Privacy mode: show only that music is playing</label>
+</section>
+<section class="panel"><h2>Status and card layout</h2><div class="group">
+<div class="field"><label>Member-list status displays</label><select id="status_line"><option value="app">Application name</option><option value="line1">Line 1</option><option value="line2">Line 2</option></select></div>
+<div class="field"><label>Line 1 (required Discord details)</label><select id="line1"><option value="title">Track title</option><option value="artist">Artist</option><option value="album">Album</option></select></div>
+<div class="field"><label>Line 2</label><select id="line2"><option value="artist">Artist</option><option value="artist_album">Artist + album</option><option value="album">Album</option><option value="title">Track title</option><option value="off">Off</option></select></div>
+<div class="field"><label>Line 3 / artwork hover text</label><select id="line3"><option value="album">Album</option><option value="artist">Artist</option><option value="title">Track title</option><option value="off">Off</option></select></div>
+</div>
+<label class="toggle"><input type="checkbox" id="cover"> Show album artwork</label>
+<label class="toggle"><input type="checkbox" id="badge"> Show small badge over artwork</label>
+<div class="field"><label>Badge image URL (HTTPS)</label><input id="badge_url" placeholder="https://.../badge.png"></div>
+<label class="toggle"><input type="checkbox" id="timestamps"> Show elapsed / duration timeline</label>
+</section>
+<section class="panel"><h2>Clickable fields</h2>
+<label class="toggle"><input type="checkbox" id="link_line1"> Make line 1 open its track / artist / album page</label>
+<label class="toggle"><input type="checkbox" id="link_line2"> Make line 2 open its matching page</label>
+<label class="toggle"><input type="checkbox" id="link_cover"> Make artwork open album (or track if no album)</label>
+</section>
+<section class="panel"><h2>Discord buttons</h2><div class="group">
+<div class="field"><label>Button 1</label><select id="button1"><option value="listen">Listen on YouTube Music</option><option value="album">View album</option><option value="artist">View artist</option><option value="app">Get LiChord</option><option value="off">Off</option></select></div>
+<div class="field"><label>Button 2</label><select id="button2"><option value="listen">Listen on YouTube Music</option><option value="album">View album</option><option value="artist">View artist</option><option value="app">Get LiChord</option><option value="off">Off</option></select></div>
+</div><p class="note">Discord only supports two buttons. Buttons requiring a missing track/artist/album URL are omitted automatically.</p></section>
+<div class="actions"><button id="save">Save settings</button><button class="secondary" id="reset">Reset defaults</button></div><p id="message" class="status"></p>
+</main>
+<aside><div class="card"><div class="head" id="previewHead">Listening to LiChord</div><div class="track"><img class="art" id="previewArt" alt="" src=""><div class="lines"><div class="line one" id="preview1">Track title</div><div class="line two" id="preview2">Artist</div><div class="line three" id="preview3">Album</div><div class="bar" id="previewBar"><span>1:06</span><div class="meter"><i></i></div><span>3:24</span></div></div></div><div class="buttons" id="previewButtons"><span>Listen on YouTube Music</span><span>Get LiChord</span></div></div><p class="status">Preview uses sample metadata. Actual artwork, links, and timeline come from the active MPRIS player.</p></aside></div>
+<script>
+const ids=['enabled','application_id','app_name','app_url','status_line','line1','line2','line3','cover','badge','badge_url','timestamps','link_line1','link_line2','link_cover','show_paused','hide_details','button1','button2'];
+const defaults={enabled:true,application_id:'',app_name:'',app_url:'https://github.com/GraveEaterMadison/LiChord',status_line:'line2',line1:'title',line2:'artist',line3:'album',cover:true,badge:true,badge_url:'',timestamps:true,link_line1:false,link_line2:false,link_cover:false,show_paused:false,hide_details:false,button1:'listen',button2:'app'};
+function read(){const x={};for(const id of ids){const e=document.getElementById(id);x[id]=e.type==='checkbox'?e.checked:e.value}return x}
+function write(x){for(const id of ids){const e=document.getElementById(id);if(x[id]!==undefined){if(e.type==='checkbox')e.checked=!!x[id];else e.value=x[id]}}preview()}
+function preview(){const c=read(),name=c.app_name.trim()||'LiChord';document.getElementById('previewHead').textContent='Listening to '+name;document.getElementById('preview1').textContent=({title:'Track title',artist:'Artist',album:'Album'})[c.line1];document.getElementById('preview2').textContent=({title:'Track title',artist:'Artist',album:'Album',artist_album:'Artist — Album',off:''})[c.line2];document.getElementById('preview3').textContent=c.cover?({title:'Track title',artist:'Artist',album:'Album',off:''})[c.line3]:'';document.getElementById('previewArt').style.display=c.cover?'block':'none';document.getElementById('previewBar').style.display=c.timestamps?'flex':'none';document.getElementById('preview2').style.display=c.hide_details?'none':'';document.getElementById('preview1').style.display=c.hide_details?'none':'';document.getElementById('preview3').style.display=c.hide_details?'none':'';document.getElementById('previewButtons').style.display=c.hide_details?'none':'grid';}
+async function load(){try{const r=await fetch('/api/config');write(await r.json())}catch(e){write(defaults)}}
+document.getElementById('save').onclick=async()=>{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(read())});const d=await r.json();document.getElementById('message').textContent=r.ok?'Saved to ~/.config/lichord-presence/config.json':d.error;};
+document.getElementById('reset').onclick=()=>write(defaults);for(const id of ids)document.getElementById(id).addEventListener('change',preview);for(const id of ['app_name','badge_url','application_id','app_url'])document.getElementById(id).addEventListener('input',preview);load();
+</script></body></html>
