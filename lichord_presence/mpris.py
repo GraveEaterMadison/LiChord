@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
+from collections import deque
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .config import PresenceConfig
-from .discord_ipc import DiscordIPC, build_activity
+from .discord_ipc import DiscordIPC
 
 log = logging.getLogger("lichord.presence")
 
@@ -27,18 +30,23 @@ def _track(metadata: dict[str, Any]) -> dict[str, Any] | None:
     video_id = parse_qs(parsed.query).get("v", [None])[0]
     if not video_id and parsed.netloc.endswith("youtu.be"):
         video_id = parsed.path.strip("/")
+    external_url = url if url.startswith(("https://", "http://")) else None
     return {"title": title, "artist": artist, "album": album, "artwork": art or None,
-            "url": url if url.startswith(("https://", "http://")) else None,
-            "video_id": video_id, "local": not bool(url.startswith(("https://", "http://")))}
+            "url": external_url, "video_id": video_id,
+            "local": not bool(external_url or video_id)}
 
 class MprisPresence:
     def __init__(self, config: PresenceConfig):
         self.config = config
         self.client: DiscordIPC | None = None
-        self.last_payload: str | None = None
+        self.last_signature: str | None = None
         self.last_send = 0.0
+        self.last_start_ms: int | None = None
         self.last_track_key: str | None = None
-        self.was_visible = False
+        self.last_connect_try = 0.0
+        self.connect_backoff = 1.0
+        self.frames: deque[float] = deque()
+        self.visible = False
 
     async def run(self):
         try:
@@ -90,51 +98,88 @@ class MprisPresence:
                 log.warning("MPRIS poll failed", exc_info=True)
             await asyncio.sleep(1.0)
 
+    def _connect(self) -> bool:
+        now = time.monotonic()
+        if now - self.last_connect_try < self.connect_backoff:
+            return False
+        self.last_connect_try = now
+        client = DiscordIPC(self.config.application_id)
+        try:
+            client.connect()
+            self.client = client
+            self.connect_backoff = 1.0
+            self.last_signature = None
+            log.info("Connected to Discord desktop IPC")
+            return True
+        except Exception:
+            client.close()
+            self.connect_backoff = min(15.0, self.connect_backoff * 2)
+            log.debug("Discord is not available; retrying in %.0fs", self.connect_backoff,
+                      exc_info=True)
+            return False
+
     async def _publish(self, track, playing, position, duration):
-        if not self.config.enabled or (not playing and not self.config.show_paused):
+        cfg = self.config
+        if not cfg.enabled or (not playing and not cfg.show_paused):
             self._clear()
             return
-        if not self.config.application_id:
+        if not cfg.application_id:
             return
+
         key = "|".join(str(track.get(k) or "") for k in ("title", "artist", "album", "url"))
         if key != self.last_track_key:
             self.last_track_key = key
-            self.last_payload = None
-        import json
-        import time
-        now = time.time()
-        activity = build_activity(self.config, track, playing, position, duration, now)
-        payload = json.dumps(activity, sort_keys=True)
-        if payload == self.last_payload and now - self.last_send < 45:
+            self.last_signature = None
+            self.last_start_ms = None
+
+        now_wall = time.time()
+        start_ms = int((now_wall - max(0.0, position)) * 1000) if playing and cfg.timestamps and duration > 0 else None
+        # Exclude timestamps from the signature: position advances continuously, but Discord
+        # should only receive a new frame for a seek, state/config change, track change or refresh.
+        from .discord_ipc import build_activity
+        activity = build_activity(cfg, track, playing, position, duration, now_wall)
+        signature_payload = dict(activity)
+        signature_payload.pop("timestamps", None)
+        signature = json.dumps(signature_payload, sort_keys=True)
+        now = time.monotonic()
+        seeked = (start_ms is not None and self.last_start_ms is not None
+                  and abs(start_ms - self.last_start_ms) > 2000)
+        changed = signature != self.last_signature
+        refresh = now - self.last_send >= 45.0
+        if not (changed or seeked or refresh):
             return
         if now - self.last_send < 1.5:
             return
-        if self.client is None:
-            self.client = DiscordIPC(self.config.application_id)
-            try:
-                self.client.connect()
-            except Exception:
-                log.debug("Discord is not available yet", exc_info=True)
-                self.client = None
-                return
+        while self.frames and now - self.frames[0] > 21.0:
+            self.frames.popleft()
+        if len(self.frames) >= 5:
+            return
+        if self.client is None and not self._connect():
+            return
         try:
             self.client.set_activity(activity)
-            self.last_payload = payload
+            self.frames.append(now)
+            self.last_signature = signature
             self.last_send = now
-            self.was_visible = True
+            self.last_start_ms = start_ms
+            self.visible = True
         except Exception:
             log.warning("Discord presence update failed; reconnecting", exc_info=True)
             self.client.close()
             self.client = None
+            self.visible = False
+            self.last_signature = None
 
     def _clear(self):
         if self.client:
             try:
-                self.client.clear()
+                if self.visible:
+                    self.client.clear()
             except Exception:
                 pass
             self.client.close()
             self.client = None
-        self.last_payload = None
+        self.last_signature = None
         self.last_track_key = None
-        self.was_visible = False
+        self.last_start_ms = None
+        self.visible = False
