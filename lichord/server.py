@@ -141,5 +141,8 @@ async def unexpected_error(_request: Request, exc: Exception):
 
 def run() -> None:
     import uvicorn
+
+    level = os.getenv("LICHORD_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(level=getattr(logging, level, logging.INFO))
     uvicorn.run("lichord.server:app", host=os.getenv("LICHORD_HOST", "0.0.0.0"),
                 port=int(os.getenv("LICHORD_PORT", "8787")), reload=False)

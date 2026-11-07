@@ -4,13 +4,15 @@ import base64
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import RLock
+from threading import BoundedSemaphore, RLock
 from typing import Protocol
 from urllib.parse import quote
 
 from .models import Stream, Track
 
 log = logging.getLogger("lichord.providers")
+_SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="lichord-search")
+_EXTRACTOR_LIMIT = BoundedSemaphore(4)
 
 
 class Provider(Protocol):
@@ -54,7 +56,8 @@ class YouTubeMusicProvider:
             return self._clients[region]
 
     def search(self, query: str, limit: int, region: str) -> list[Track]:
-        results = self._client(region).search(query, filter="songs", limit=limit)
+        with _EXTRACTOR_LIMIT:
+            results = self._client(region).search(query, filter="songs", limit=limit)
         tracks = []
         for item in results:
             video_id = _clean(item.get("videoId"))
@@ -85,7 +88,8 @@ class ExtractorSearchProvider:
 
     def search(self, query: str, limit: int, region: str) -> list[Track]:
         ydl = _ydl({"extract_flat": True, "playlistend": limit})
-        info = ydl.extract_info(f"{self.search_prefix}{limit}:{query}", download=False)
+        with _EXTRACTOR_LIMIT:
+            info = ydl.extract_info(f"{self.search_prefix}{limit}:{query}", download=False)
         entries = (info or {}).get("entries") or []
         out = []
         for entry in entries:
@@ -140,7 +144,8 @@ def _ydl(options: dict):
 
 def _yt_dlp_stream(url: str, quality: str) -> Stream:
     fmt = "worstaudio/best" if quality.upper() == "LOW" else "bestaudio/best"
-    info = _ydl({"format": fmt}).extract_info(url, download=False)
+    with _EXTRACTOR_LIMIT:
+        info = _ydl({"format": fmt}).extract_info(url, download=False)
     if not isinstance(info, dict):
         raise LookupError("No playable stream was returned")
     formats = info.get("requested_formats") or []
@@ -171,18 +176,26 @@ class ProviderHub:
             raise ValueError(f"Unsupported provider: {selection}")
         if not names:
             raise ProviderSearchError("No search providers are configured")
-        found: list[Track] = []
-        successful = 0
-        with ThreadPoolExecutor(max_workers=min(3, len(names))) as pool:
-            futures = {pool.submit(self.providers[n].search, query, limit, region): n for n in names}
-            for future in as_completed(futures):
-                try:
-                    found.extend(future.result())
-                    successful += 1
-                except Exception:
-                    log.exception("Search provider %s failed", futures[future])
-        if successful == 0:
+        results_by_provider: dict[str, list[Track]] = {}
+        failed = []
+        futures = {
+            _SEARCH_EXECUTOR.submit(self.providers[name].search, query, limit, region): name
+            for name in names
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                results_by_provider[name] = future.result()
+            except Exception:
+                failed.append(name)
+                log.exception("Search provider %s failed", name)
+        if len(failed) == len(names):
             raise ProviderSearchError("Every selected search provider failed")
+        found = [
+            track
+            for name in names
+            for track in results_by_provider.get(name, [])
+        ]
         seen, deduped = set(), []
         for track in found:
             key = (_clean(track.title).casefold(), _clean(track.artist).casefold())
