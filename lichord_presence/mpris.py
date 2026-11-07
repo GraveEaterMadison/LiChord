@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .config import PresenceConfig
 from .discord_ipc import DiscordIPC
-from .state import update_now_playing
+from .state import update_now_playing, update_players
 
 log = logging.getLogger("lichord.presence")
 
@@ -95,10 +95,13 @@ class MprisPresence:
                         for service in list(player_cache):
                             if service not in services:
                                 player_cache.pop(service, None)
+                        update_players([{"service": name, "name": name.removeprefix("org.mpris.MediaPlayer2.").replace("-", " ").replace(".", " · ")} for name in services])
                         names_checked_at = time.monotonic()
 
+                    selected = self.config.player_service
+                    active_services = [selected] if selected else services
                     snapshots = []
-                    for service in services:
+                    for service in active_services:
                         try:
                             props = player_cache.get(service)
                             if props is None:
@@ -155,10 +158,12 @@ class MprisPresence:
                             pass
                         bus = None
                     player_cache.clear()
+                    update_players([])
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(15.0, retry_delay * 2)
         finally:
             update_now_playing(None)
+            update_players([])
             self._clear()
             if bus is not None:
                 try:

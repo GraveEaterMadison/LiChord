@@ -42,6 +42,7 @@ The stream endpoint returns freshly extracted upstream media URLs. Those provide
 
 LiChord Presence is a separate process. It reads the active MPRIS player over the session D-Bus and communicates with the running Discord desktop client through its local IPC socket.
 
+- Choose a specific MPRIS playback source or let automatic priority choose one.
 - Configure the member-list status line and the three text/artwork lines.
 - Show/hide artwork, timeline, badge, and paused cards.
 - Make metadata lines and artwork clickable when a matching source URL exists.

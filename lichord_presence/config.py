@@ -14,6 +14,7 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 class PresenceConfig:
     enabled: bool = True
     application_id: str = ""
+    player_service: str = ""
     app_name: str = ""
     status_line: str = "line2"
     line1: str = "title"
@@ -64,6 +65,9 @@ class PresenceConfig:
             if getattr(cfg, name) not in {"listen", "album", "artist", "app", "off"}:
                 setattr(cfg, name, "off")
         cfg.application_id = cfg.application_id.strip()
+        cfg.player_service = cfg.player_service.strip()[:256]
+        if cfg.player_service and not cfg.player_service.startswith("org.mpris.MediaPlayer2."):
+            cfg.player_service = ""
         if cfg.application_id and not cfg.application_id.isdigit():
             cfg.application_id = ""
         cfg.app_name = cfg.app_name.strip()[:128]

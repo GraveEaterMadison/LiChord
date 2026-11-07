@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import CONFIG_PATH, PresenceConfig
-from .state import get_now_playing
+from .state import get_now_playing, get_players
 
 PAGE = Path(__file__).with_name("static") / "index.html"
 
@@ -45,6 +45,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, self.config.__dict__)
         elif path == "/api/now-playing":
             self._json(200, get_now_playing() or {})
+        elif path == "/api/players":
+            self._json(200, {"players": get_players()})
         elif path == "/":
             body = PAGE.read_bytes()
             self.send_response(200)
