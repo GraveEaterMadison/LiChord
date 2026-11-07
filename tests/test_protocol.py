@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from lichord.models import Stream, Track
-from lichord.providers import ProviderHub
+from lichord.providers import ProviderHub, ProviderSearchError
 from lichord.server import app
 
 
@@ -49,3 +49,27 @@ def test_provider_hub_deduplicates_and_isolates_failures():
     results = hub.search("query", 10, "IN", "all")
     assert len(results) == 3
     assert {t.title.strip() for t in results} == {"Song", "Other", "Third"}
+
+
+
+class BrokenProvider(FakeProvider):
+    def search(self, query, limit, region):
+        raise RuntimeError("provider unavailable")
+
+
+def test_provider_hub_reports_total_search_failure():
+    hub = ProviderHub({"broken": BrokenProvider("broken", [])})
+    try:
+        hub.search("query", 10, "IN", "all")
+    except ProviderSearchError:
+        pass
+    else:
+        raise AssertionError("all-provider failure should not look like an empty result")
+
+
+def test_provider_hub_preserves_results_when_one_provider_fails():
+    good = FakeProvider("good", [Track("ytm:1", "Song", "Artist")])
+    broken = BrokenProvider("broken", [])
+    hub = ProviderHub({"good": good, "broken": broken})
+    results = hub.search("query", 10, "IN", "all")
+    assert [track.id for track in results] == ["ytm:1"]

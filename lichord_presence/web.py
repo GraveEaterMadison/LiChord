@@ -46,8 +46,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if urlparse(self.path).path != "/api/config":
             return self._json(404, {"error": "not found"})
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed_origin = urlparse(origin)
+            request_host = self.headers.get("Host", "").split(":", 1)[0].strip("[]").lower()
+            origin_host = (parsed_origin.hostname or "").lower()
+            if (parsed_origin.scheme != "http"
+                    or origin_host not in {"127.0.0.1", "localhost", "::1"}
+                    or origin_host != request_host):
+                return self._json(403, {"error": "cross-origin settings writes are not allowed"})
         try:
             size = int(self.headers.get("Content-Length", "0"))
+            if size < 1:
+                return self._json(400, {"error": "empty request body"})
             if size > 16384:
                 return self._json(413, {"error": "payload too large"})
             raw = json.loads(self.rfile.read(size))
@@ -59,6 +70,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, self.config.__dict__)
         except (ValueError, TypeError) as exc:
             self._json(400, {"error": str(exc)})
+        except OSError:
+            self._json(500, {"error": "could not save settings"})
 
     def log_message(self, fmt, *args):
         pass

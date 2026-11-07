@@ -37,3 +37,51 @@ def test_config_rejects_invalid_options():
     cfg = PresenceConfig.from_mapping({"line1": "not-a-field", "button1": "script"})
     assert cfg.line1 == "title"
     assert cfg.button1 == "off"
+
+
+
+def test_clickable_lines_use_matching_discord_url_fields():
+    cfg = PresenceConfig.from_mapping({"link_line1": True, "link_line2": True})
+    track = {
+        "title": "Song",
+        "artist": "Artist",
+        "album": "Record",
+        "video_id": "abc123",
+        "artist_id": "artist123",
+    }
+    payload = build_activity(cfg, track, True, 0, 100, now=1000)
+    assert payload["details_url"] == "https://music.youtube.com/watch?v=abc123"
+    assert payload["state_url"] == "https://music.youtube.com/channel/artist123"
+
+
+def test_clickable_line_without_matching_url_is_omitted():
+    cfg = PresenceConfig.from_mapping({"link_line1": True, "link_line2": True})
+    payload = build_activity(
+        cfg, {"title": "Local song", "artist": "Local artist", "local": True}, True, 0, 0
+    )
+    assert "details_url" not in payload
+    assert "state_url" not in payload
+
+
+def test_non_https_artwork_and_badge_are_omitted():
+    cfg = PresenceConfig.from_mapping({"badge_url": "http://example.com/badge.png"})
+    payload = build_activity(
+        cfg, {"title": "Song", "artwork": "http://example.com/art.png"}, True, 0, 0
+    )
+    assert "assets" not in payload
+
+
+def test_config_load_uses_the_same_validation_as_mapping(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        '{"line1":"invalid","application_id":"not-a-number","badge_url":"http://bad"}'
+    )
+    cfg = PresenceConfig.load(path)
+    assert cfg.line1 == "title"
+    assert cfg.application_id == ""
+    assert cfg.badge_url == ""
+
+
+def test_config_rejects_non_https_application_url():
+    cfg = PresenceConfig.from_mapping({"app_url": "javascript:alert(1)"})
+    assert cfg.app_url == PresenceConfig().app_url

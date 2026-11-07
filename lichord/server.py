@@ -5,7 +5,7 @@ import os
 import re
 import time
 from collections import OrderedDict
-from threading import RLock
+from threading import Lock, RLock
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -14,7 +14,6 @@ from fastapi.responses import JSONResponse
 from . import __version__
 from .providers import ProviderHub
 
-logging.basicConfig(level=os.getenv("LICHORD_LOG_LEVEL", "INFO"))
 log = logging.getLogger("lichord")
 
 app = FastAPI(title="LiChord BitChord Addon", version=__version__)
@@ -24,6 +23,7 @@ hub = ProviderHub()
 # signed media URLs expire and must be freshly resolved on every playback request.
 _CACHE: OrderedDict[tuple, tuple[float, list[dict]]] = OrderedDict()
 _CACHE_LOCK = RLock()
+_CACHE_KEY_LOCKS: dict[tuple, Lock] = {}
 _CACHE_TTL = 90
 _CACHE_MAX = 128
 
@@ -41,13 +41,27 @@ def _cached_search(key: tuple, loader):
             return hit[1]
         if hit:
             del _CACHE[key]
-    result = loader()
-    with _CACHE_LOCK:
-        _CACHE[key] = (now + _CACHE_TTL, result)
-        _CACHE.move_to_end(key)
-        while len(_CACHE) > _CACHE_MAX:
-            _CACHE.popitem(last=False)
-    return result
+        key_lock = _CACHE_KEY_LOCKS.setdefault(key, Lock())
+
+    try:
+        with key_lock:
+            now = time.monotonic()
+            with _CACHE_LOCK:
+                hit = _CACHE.get(key)
+                if hit and hit[0] > now:
+                    _CACHE.move_to_end(key)
+                    return hit[1]
+            result = loader()
+            with _CACHE_LOCK:
+                _CACHE[key] = (time.monotonic() + _CACHE_TTL, result)
+                _CACHE.move_to_end(key)
+                while len(_CACHE) > _CACHE_MAX:
+                    _CACHE.popitem(last=False)
+            return result
+    finally:
+        with _CACHE_LOCK:
+            if not key_lock.locked():
+                _CACHE_KEY_LOCKS.pop(key, None)
 
 
 @app.get("/manifest.json")

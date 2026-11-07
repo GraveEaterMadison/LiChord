@@ -57,52 +57,89 @@ class MprisPresence:
         except ImportError as exc:
             raise RuntimeError("Install the presence extra: pip install 'lichord-addon[presence]'") from exc
 
-        bus = await MessageBus().connect()
-        log.info("Connected to the session D-Bus; watching MPRIS players")
-        while True:
-            self.config = PresenceConfig.load()
-            try:
-                names_reply = await bus.call(Message(destination="org.freedesktop.DBus",
-                    path="/org/freedesktop/DBus", interface="org.freedesktop.DBus",
-                    member="ListNames"))
-                names = names_reply.body[0] if names_reply.message_type == MessageType.METHOD_RETURN else []
-                services = [n for n in names if n.startswith("org.mpris.MediaPlayer2.")]
-                snapshots = []
-                for service in services:
-                    try:
-                        intro = await bus.introspect(service, "/org/mpris/MediaPlayer2")
-                        obj = bus.get_proxy_object(service, "/org/mpris/MediaPlayer2", intro)
-                        props = obj.get_interface("org.freedesktop.DBus.Properties")
-                        data = await props.call_get_all("org.mpris.MediaPlayer2.Player")
-                        values = {k: v.value for k, v in data.items()}
-                        status = values.get("PlaybackStatus", "Stopped")
-                        snapshots.append((status == "Playing", status, values.get("Metadata", {}),
-                                          values.get("Position", 0)))
-                    except Exception:
-                        log.debug("MPRIS player %s unavailable", service, exc_info=True)
-                current = next((x for x in snapshots if x[0]), None)
-                if current is None:
-                    current = next((x for x in snapshots if x[1] == "Paused"), None)
-                if current:
-                    is_playing, _status, metadata, pos_us = current
-                    track = _track(metadata)
-                    if track:
-                        duration_us = metadata.get("mpris:length", 0)
-                        duration_us = getattr(duration_us, "value", duration_us) or 0
-                        position = max(0.0, float(pos_us or 0) / 1_000_000)
-                        duration = max(0.0, float(duration_us) / 1_000_000)
-                        update_now_playing({"track": track, "playing": is_playing,
-                                            "position": position, "duration": duration})
-                        await self._publish(track, is_playing, position, duration)
+        bus = None
+        retry_delay = 1.0
+        try:
+            while True:
+                self.config = PresenceConfig.load()
+                if self.client and self.client.application_id != self.config.application_id:
+                    self._clear()
+                try:
+                    if bus is None:
+                        bus = await MessageBus().connect()
+                        retry_delay = 1.0
+                        log.info("Connected to the session D-Bus; watching MPRIS players")
+                    names_reply = await bus.call(Message(
+                        destination="org.freedesktop.DBus",
+                        path="/org/freedesktop/DBus",
+                        interface="org.freedesktop.DBus",
+                        member="ListNames",
+                    ))
+                    names = names_reply.body[0] if names_reply.message_type == MessageType.METHOD_RETURN else []
+                    services = sorted(n for n in names if n.startswith("org.mpris.MediaPlayer2."))
+                    snapshots = []
+                    for service in services:
+                        try:
+                            intro = await bus.introspect(service, "/org/mpris/MediaPlayer2")
+                            obj = bus.get_proxy_object(service, "/org/mpris/MediaPlayer2", intro)
+                            props = obj.get_interface("org.freedesktop.DBus.Properties")
+                            data = await props.call_get_all("org.mpris.MediaPlayer2.Player")
+                            values = {k: v.value for k, v in data.items()}
+                            status = values.get("PlaybackStatus", "Stopped")
+                            snapshots.append((status == "Playing", status, service,
+                                              values.get("Metadata", {}), values.get("Position", 0)))
+                        except Exception:
+                            log.debug("MPRIS player %s unavailable", service, exc_info=True)
+
+                    def priority(snapshot):
+                        service = snapshot[2].lower()
+                        if "bitchord" in service:
+                            return (0, service)
+                        if "youtube" in service:
+                            return (1, service)
+                        return (2, service)
+
+                    playing = sorted((x for x in snapshots if x[0]), key=priority)
+                    paused = sorted((x for x in snapshots if x[1] == "Paused"), key=priority)
+                    current = (playing or paused or [None])[0]
+                    if current:
+                        is_playing, _status, _service, metadata, pos_us = current
+                        track = _track(metadata)
+                        if track:
+                            duration_us = metadata.get("mpris:length", 0)
+                            duration_us = getattr(duration_us, "value", duration_us) or 0
+                            position = max(0.0, float(pos_us or 0) / 1_000_000)
+                            duration = max(0.0, float(duration_us) / 1_000_000)
+                            update_now_playing({"track": track, "playing": is_playing,
+                                                "position": position, "duration": duration})
+                            await self._publish(track, is_playing, position, duration)
+                        else:
+                            update_now_playing(None)
+                            self._clear()
                     else:
                         update_now_playing(None)
                         self._clear()
-                else:
-                    update_now_playing(None)
-                    self._clear()
-            except Exception:
-                log.warning("MPRIS poll failed", exc_info=True)
-            await asyncio.sleep(1.0)
+                    await asyncio.sleep(1.0)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.warning("MPRIS session unavailable; reconnecting", exc_info=True)
+                    if bus is not None:
+                        try:
+                            bus.disconnect()
+                        except Exception:
+                            pass
+                        bus = None
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(15.0, retry_delay * 2)
+        finally:
+            update_now_playing(None)
+            self._clear()
+            if bus is not None:
+                try:
+                    bus.disconnect()
+                except Exception:
+                    pass
 
     def _connect(self) -> bool:
         now = time.monotonic()

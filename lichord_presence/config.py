@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 CONFIG_DIR = Path.home() / ".config" / "lichord-presence"
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -34,8 +35,9 @@ class PresenceConfig:
     def load(cls, path: Path = CONFIG_PATH) -> "PresenceConfig":
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            allowed = {f.name for f in fields(cls)}
-            return cls(**{k: v for k, v in raw.items() if k in allowed})
+            if not isinstance(raw, dict):
+                return cls()
+            return cls.from_mapping(raw)
         except (OSError, ValueError, TypeError):
             return cls()
 
@@ -61,7 +63,22 @@ class PresenceConfig:
             if getattr(cfg, name) not in {"listen", "album", "artist", "app", "off"}:
                 setattr(cfg, name, "off")
         cfg.application_id = cfg.application_id.strip()
+        if cfg.application_id and not cfg.application_id.isdigit():
+            cfg.application_id = ""
         cfg.app_name = cfg.app_name.strip()[:128]
-        cfg.badge_url = cfg.badge_url.strip()[:256]
-        cfg.app_url = cfg.app_url.strip()[:512]
+        cfg.badge_url = _https_url(cfg.badge_url, 256) or ""
+        cfg.app_url = _https_url(cfg.app_url, 512) or cls.app_url
         return cfg
+
+
+def _https_url(value: str, max_length: int) -> str | None:
+    value = value.strip()[:max_length]
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            return None
+        return value
+    except ValueError:
+        return None

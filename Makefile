@@ -1,7 +1,7 @@
 .PHONY: install test lint format run docker
 
 install:
-	pyton -m pip install -e ".[dev]"
+	python -m pip install -e ".[dev]"
 
 test:
 	pytest

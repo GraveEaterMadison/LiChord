@@ -4,6 +4,7 @@ import base64
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import RLock
 from typing import Protocol
 from urllib.parse import quote
 
@@ -16,6 +17,10 @@ class Provider(Protocol):
     name: str
     def search(self, query: str, limit: int, region: str) -> list[Track]: ...
     def stream(self, track_id: str, quality: str) -> Stream: ...
+
+
+class ProviderSearchError(RuntimeError):
+    """Raised when every selected catalogue fails to answer a search."""
 
 
 def _clean(value: object) -> str:
@@ -34,16 +39,19 @@ class YouTubeMusicProvider:
     name = "youtube_music"
 
     def __init__(self) -> None:
-        self._api = None
+        self._clients = {}
+        self._client_lock = RLock()
 
     def _client(self, region: str):
-        if self._api is None:
-            try:
-                from ytmusicapi import YTMusic
-            except ImportError as exc:
-                raise RuntimeError("Install the ytmusicapi dependency") from exc
-            self._api = YTMusic(language="en", location=region.upper())
-        return self._api
+        region = (region or "IN").upper()
+        with self._client_lock:
+            if region not in self._clients:
+                try:
+                    from ytmusicapi import YTMusic
+                except ImportError as exc:
+                    raise RuntimeError("Install the ytmusicapi dependency") from exc
+                self._clients[region] = YTMusic(language="en", location=region)
+            return self._clients[region]
 
     def search(self, query: str, limit: int, region: str) -> list[Track]:
         results = self._client(region).search(query, filter="songs", limit=limit)
@@ -139,8 +147,8 @@ def _yt_dlp_stream(url: str, quality: str) -> Stream:
     audio = [f for f in formats if isinstance(f, dict) and f.get("acodec") not in (None, "none")]
     chosen = max(audio, key=lambda f: float(f.get("abr") or 0)) if audio else info
     stream_url = chosen.get("url") or info.get("url")
-    if not isinstance(stream_url, str) or not stream_url.startswith(("https://", "http://")):
-        raise LookupError("Extractor returned no HTTP audio URL")
+    if not isinstance(stream_url, str) or not stream_url.startswith("https://"):
+        raise LookupError("Extractor returned no secure HTTPS audio URL")
     return Stream(
         url=stream_url, ext=_clean(chosen.get("ext") or info.get("ext")),
         codec=_clean(chosen.get("acodec") or info.get("acodec")),
@@ -161,14 +169,20 @@ class ProviderHub:
         names = list(self.providers) if selection == "all" else [selection]
         if selection not in self.providers and selection != "all":
             raise ValueError(f"Unsupported provider: {selection}")
+        if not names:
+            raise ProviderSearchError("No search providers are configured")
         found: list[Track] = []
+        successful = 0
         with ThreadPoolExecutor(max_workers=min(3, len(names))) as pool:
             futures = {pool.submit(self.providers[n].search, query, limit, region): n for n in names}
             for future in as_completed(futures):
                 try:
                     found.extend(future.result())
+                    successful += 1
                 except Exception:
                     log.exception("Search provider %s failed", futures[future])
+        if successful == 0:
+            raise ProviderSearchError("Every selected search provider failed")
         seen, deduped = set(), []
         for track in found:
             key = (_clean(track.title).casefold(), _clean(track.artist).casefold())

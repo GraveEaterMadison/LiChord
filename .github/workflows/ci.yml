@@ -21,4 +21,5 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
       - run: ruff check --select F .
-      - run: pytest --cov=lichord --cov-report=term-missing
+      - run: python -m compileall -q lichord lichord_presence
+      - run: pytest --cov=lichord --cov=lichord_presence --cov-report=term-missing
