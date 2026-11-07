@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 CONFIG_DIR = Path.home() / ".config" / "lichord-presence"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
+
 @dataclass
 class PresenceConfig:
     enabled: bool = True
@@ -72,8 +73,8 @@ class PresenceConfig:
 
 
 def _https_url(value: str, max_length: int) -> str | None:
-    value = value.strip()[:max_length]
-    if not value:
+    value = value.strip()
+    if not value or len(value) > max_length:
         return None
     try:
         parsed = urlsplit(value)

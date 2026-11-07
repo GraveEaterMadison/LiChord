@@ -14,10 +14,12 @@ from .state import update_now_playing
 
 log = logging.getLogger("lichord.presence")
 
+
 def _track(metadata: dict[str, Any]) -> dict[str, Any] | None:
     def val(key, default=None):
         item = metadata.get(key)
         return getattr(item, "value", item) if item is not None else default
+
     title = str(val("xesam:title", "") or "").strip()
     if not title:
         return None
@@ -36,6 +38,7 @@ def _track(metadata: dict[str, Any]) -> dict[str, Any] | None:
     return {"title": title, "artist": artist, "album": album, "artwork": artwork,
             "url": external_url, "video_id": video_id,
             "local": not bool(external_url or video_id)}
+
 
 class MprisPresence:
     def __init__(self, config: PresenceConfig):
@@ -59,6 +62,9 @@ class MprisPresence:
 
         bus = None
         retry_delay = 1.0
+        player_cache = {}
+        names_checked_at = 0.0
+        services = []
         try:
             while True:
                 self.config = PresenceConfig.load()
@@ -68,27 +74,45 @@ class MprisPresence:
                     if bus is None:
                         bus = await MessageBus().connect()
                         retry_delay = 1.0
+                        player_cache.clear()
+                        names_checked_at = 0.0
                         log.info("Connected to the session D-Bus; watching MPRIS players")
-                    names_reply = await bus.call(Message(
-                        destination="org.freedesktop.DBus",
-                        path="/org/freedesktop/DBus",
-                        interface="org.freedesktop.DBus",
-                        member="ListNames",
-                    ))
-                    names = names_reply.body[0] if names_reply.message_type == MessageType.METHOD_RETURN else []
-                    services = sorted(n for n in names if n.startswith("org.mpris.MediaPlayer2."))
+
+                    if time.monotonic() - names_checked_at >= 5.0:
+                        names_reply = await bus.call(Message(
+                            destination="org.freedesktop.DBus",
+                            path="/org/freedesktop/DBus",
+                            interface="org.freedesktop.DBus",
+                            member="ListNames",
+                        ))
+                        services = sorted(
+                            name for name in (
+                                names_reply.body[0]
+                                if names_reply.message_type == MessageType.METHOD_RETURN else []
+                            )
+                            if name.startswith("org.mpris.MediaPlayer2.")
+                        )
+                        for service in list(player_cache):
+                            if service not in services:
+                                player_cache.pop(service, None)
+                        names_checked_at = time.monotonic()
+
                     snapshots = []
                     for service in services:
                         try:
-                            intro = await bus.introspect(service, "/org/mpris/MediaPlayer2")
-                            obj = bus.get_proxy_object(service, "/org/mpris/MediaPlayer2", intro)
-                            props = obj.get_interface("org.freedesktop.DBus.Properties")
+                            props = player_cache.get(service)
+                            if props is None:
+                                intro = await bus.introspect(service, "/org/mpris/MediaPlayer2")
+                                obj = bus.get_proxy_object(service, "/org/mpris/MediaPlayer2", intro)
+                                props = obj.get_interface("org.freedesktop.DBus.Properties")
+                                player_cache[service] = props
                             data = await props.call_get_all("org.mpris.MediaPlayer2.Player")
-                            values = {k: v.value for k, v in data.items()}
+                            values = {key: variant.value for key, variant in data.items()}
                             status = values.get("PlaybackStatus", "Stopped")
                             snapshots.append((status == "Playing", status, service,
                                               values.get("Metadata", {}), values.get("Position", 0)))
                         except Exception:
+                            player_cache.pop(service, None)
                             log.debug("MPRIS player %s unavailable", service, exc_info=True)
 
                     def priority(snapshot):
@@ -99,8 +123,8 @@ class MprisPresence:
                             return (1, service)
                         return (2, service)
 
-                    playing = sorted((x for x in snapshots if x[0]), key=priority)
-                    paused = sorted((x for x in snapshots if x[1] == "Paused"), key=priority)
+                    playing = sorted((item for item in snapshots if item[0]), key=priority)
+                    paused = sorted((item for item in snapshots if item[1] == "Paused"), key=priority)
                     current = (playing or paused or [None])[0]
                     if current:
                         is_playing, _status, _service, metadata, pos_us = current
@@ -130,6 +154,7 @@ class MprisPresence:
                         except Exception:
                             pass
                         bus = None
+                    player_cache.clear()
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(15.0, retry_delay * 2)
         finally:
@@ -157,8 +182,7 @@ class MprisPresence:
         except Exception:
             client.close()
             self.connect_backoff = min(15.0, self.connect_backoff * 2)
-            log.debug("Discord is not available; retrying in %.0fs", self.connect_backoff,
-                      exc_info=True)
+            log.debug("Discord is not available; retrying in %.0fs", self.connect_backoff, exc_info=True)
             return False
 
     async def _publish(self, track, playing, position, duration):
@@ -169,7 +193,7 @@ class MprisPresence:
         if not cfg.application_id:
             return
 
-        key = "|".join(str(track.get(k) or "") for k in ("title", "artist", "album", "url"))
+        key = "|".join(str(track.get(key) or "") for key in ("title", "artist", "album", "url"))
         if key != self.last_track_key:
             self.last_track_key = key
             self.last_signature = None
@@ -187,9 +211,7 @@ class MprisPresence:
                   and abs(start_ms - self.last_start_ms) > 2000)
         changed = signature != self.last_signature
         refresh = now - self.last_send >= 45.0
-        if not (changed or seeked or refresh):
-            return
-        if now - self.last_send < 1.5:
+        if not (changed or seeked or refresh) or now - self.last_send < 1.5:
             return
         while self.frames and now - self.frames[0] > 21.0:
             self.frames.popleft()

@@ -1,15 +1,28 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from .config import CONFIG_PATH, PresenceConfig
 from .state import get_now_playing
 
 PAGE = Path(__file__).with_name("static") / "index.html"
+
+
+def _loopback_host(value: str) -> str | None:
+    try:
+        parsed = urlsplit("//" + value)
+        host = (parsed.hostname or "").lower()
+        if host == "localhost":
+            return host
+        return host if ipaddress.ip_address(host).is_loopback else None
+    except ValueError:
+        return None
+
 
 class Handler(BaseHTTPRequestHandler):
     config = PresenceConfig.load()
@@ -21,11 +34,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        path = urlsplit(self.path).path
         if path == "/api/config":
             with self.lock:
                 self._json(200, self.config.__dict__)
@@ -36,6 +50,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
         elif path == "/health":
@@ -44,16 +60,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/config":
+        if urlsplit(self.path).path != "/api/config":
             return self._json(404, {"error": "not found"})
+        peer = self.client_address[0]
+        try:
+            if not ipaddress.ip_address(peer).is_loopback:
+                return self._json(403, {"error": "settings are only available from this device"})
+        except ValueError:
+            return self._json(403, {"error": "invalid client address"})
+        request_host = _loopback_host(self.headers.get("Host", ""))
+        if not request_host:
+            return self._json(403, {"error": "settings host must be localhost"})
         origin = self.headers.get("Origin")
         if origin:
-            parsed_origin = urlparse(origin)
-            request_host = self.headers.get("Host", "").split(":", 1)[0].strip("[]").lower()
+            parsed_origin = urlsplit(origin)
             origin_host = (parsed_origin.hostname or "").lower()
-            if (parsed_origin.scheme != "http"
-                    or origin_host not in {"127.0.0.1", "localhost", "::1"}
-                    or origin_host != request_host):
+            if parsed_origin.scheme != "http" or origin_host != request_host:
                 return self._json(403, {"error": "cross-origin settings writes are not allowed"})
         try:
             size = int(self.headers.get("Content-Length", "0"))
@@ -75,6 +97,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
 
 def run_web(host="127.0.0.1", port=8790):
     server = ThreadingHTTPServer((host, port), Handler)
