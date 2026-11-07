@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+from threading import RLock
 from collections import OrderedDict
 from concurrent.futures import Future
 from urllib.parse import unquote
@@ -20,7 +21,7 @@ app = FastAPI(title="LiChord BitChord Addon", version=__version__)
 hub = ProviderHub()
 
 _CACHE: OrderedDict[tuple, tuple[float, list[dict]]] = OrderedDict()
-_CACHE_LOCK = __import__("threading").RLock()
+_CACHE_LOCK = RLock()
 _CACHE_INFLIGHT: dict[tuple, Future] = {}
 _CACHE_TTL = 90
 _CACHE_MAX = 128
@@ -170,5 +171,5 @@ def run() -> None:
     import uvicorn
     level = os.getenv("LICHORD_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=getattr(logging, level, logging.INFO))
-    uvicorn.run("lichord.server:app", host=os.getenv("LICHORD_HOST", "0.0.0.0"),
+    uvicorn.run("lichord.server:app", host=os.getenv("LICHORD_HOST", "127.0.0.1"),
                 port=int(os.getenv("LICHORD_PORT", "8787")), reload=False)
